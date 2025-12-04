@@ -4,6 +4,17 @@ import requests
 import feedparser
 from newspaper import Article, Config
 import jieba
+import nltk # 引入 nltk
+
+# --- NLTK 資料下載修正區 (解決摘要錯誤) ---
+# Streamlit Cloud 預設沒有這些資料，必須在執行時下載
+try:
+    nltk.data.find('tokenizers/punkt')
+    nltk.data.find('tokenizers/punkt_tab')
+except LookupError:
+    nltk.download('punkt', quiet=True)
+    nltk.download('punkt_tab', quiet=True)
+
 from sumy.parsers.plaintext import PlaintextParser
 from sumy.nlp.tokenizers import Tokenizer
 from sumy.summarizers.lsa import LsaSummarizer
@@ -11,7 +22,7 @@ from sumy.summarizers.lsa import LsaSummarizer
 # --- 1. 頁面設定 ---
 st.set_page_config(page_title="新聞摘要助手", page_icon="📰", layout="wide")
 st.title("📰 AI 新聞搜尋與摘要 (Bing 來源穩定版)")
-st.markdown("使用 **Bing News RSS** 解決頻率限制問題，搭配 **LSA 演算法** 進行極速摘要。")
+st.markdown("使用 **Bing News RSS** 搜尋，搭配 **LSA 演算法** 進行極速摘要。")
 
 # --- 2. 核心功能函式 ---
 
@@ -43,7 +54,7 @@ def extract_and_process(url):
     抓取並摘要
     """
     try:
-        # 設定偽裝瀏覽器 User-Agent (這是爬蟲成功的關鍵)
+        # 設定偽裝瀏覽器 User-Agent
         config = Config()
         config.browser_user_agent = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36'
         config.request_timeout = 10
@@ -67,17 +78,13 @@ def extract_and_process(url):
 
 def search_bing_rss(keyword, limit=5):
     """
-    使用 Bing News RSS 進行搜尋 (最穩定的免 Key 方案)
+    使用 Bing News RSS 進行搜尋
     """
-    # Bing News RSS URL 格式
-    # format=rss 指定輸出 RSS XML
     rss_url = f"https://www.bing.com/news/search?q={keyword}&format=rss"
-    
-    # 解析 RSS
     feed = feedparser.parse(rss_url)
     
     results = []
-    # 取前 limit 筆
+    # 這裡會回傳實際找到的數量，最多 limit 筆
     for entry in feed.entries[:limit]:
         results.append({
             "title": entry.title,
@@ -85,7 +92,7 @@ def search_bing_rss(keyword, limit=5):
             "published": entry.published if 'published' in entry else "Unknown"
         })
         
-    return results
+    return results, len(feed.entries) # 回傳資料與總搜尋數
 
 # --- 3. 主程式邏輯 ---
 
@@ -104,21 +111,23 @@ if submit_button and keyword:
     
     progress_text.text(f"🔍 正在透過 Bing 搜尋「{keyword}」...")
     
-    # 改用 Bing RSS
-    news_items = search_bing_rss(keyword)
+    # 執行搜尋
+    news_items, total_found = search_bing_rss(keyword, limit=5)
     
     if not news_items:
-        st.warning("找不到相關新聞，請嘗試其他關鍵字。")
+        st.warning(f"Bing 找不到相關新聞 (搜尋回傳 0 筆)。請嘗試其他關鍵字。")
         progress_bar.empty()
     else:
+        # 顯示實際找到的數量，讓你知道為什麼只有 2 筆
+        st.info(f"Bing 共回傳 {total_found} 筆相關新聞，系統將處理前 {len(news_items)} 筆。")
+        
         results_data = []
-        total = len(news_items)
+        process_count = len(news_items)
         
         for i, item in enumerate(news_items):
-            progress_text.text(f"正在處理 ({i+1}/{total}): {item['title']} ...")
-            progress_bar.progress((i + 1) / total)
+            progress_text.text(f"正在處理 ({i+1}/{process_count}): {item['title']} ...")
+            progress_bar.progress((i + 1) / process_count)
             
-            # 抓取並摘要
             summary = extract_and_process(item['link'])
             
             results_data.append({

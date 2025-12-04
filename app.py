@@ -4,6 +4,7 @@ import requests
 from newspaper import Article, Config
 import jieba
 import nltk
+from datetime import datetime, timedelta
 
 # --- 1. NLTK 自動修復 ---
 try:
@@ -20,9 +21,9 @@ from sumy.nlp.tokenizers import Tokenizer
 from sumy.summarizers.lsa import LsaSummarizer
 
 # --- 2. 頁面設定 ---
-st.set_page_config(page_title="GNews AI 新聞助手 (除錯版)", page_icon="🐞", layout="wide")
-st.title("🐞 GNews AI 新聞助手 (除錯版)")
-st.markdown("來源：**GNews API** | 狀態：**顯示原始 JSON 回應**")
+st.set_page_config(page_title="GNews AI 新聞助手", page_icon="📡", layout="wide")
+st.title("📡 GNews AI 新聞摘要助手 (免費版優化)")
+st.markdown("來源：**GNews API** | 優化：**自動鎖定最近 30 天新聞**")
 
 # --- 3. API Key ---
 GNEWS_API_KEY = "b8bba61d5cec4532cc9b3630311eed30"
@@ -62,33 +63,38 @@ def extract_and_process(url):
 
 def search_gnews(keyword, limit=5):
     """
-    使用 GNews API 進行搜尋 (已放寬搜尋條件)
+    使用 GNews API 進行搜尋 (針對免費版限制進行優化)
     """
     try:
         url = "https://gnews.io/api/v4/search"
         
-        # 修改策略：先移除 country='tw'，放寬搜尋範圍，只保留語言限制
+        # --- 關鍵修正：計算 28 天前的時間字串 ---
+        # 免費版只能看過去 30 天，我們設 28 天比較保險
+        past_date = datetime.utcnow() - timedelta(days=28)
+        from_date_str = past_date.strftime('%Y-%m-%dT%H:%M:%SZ')
+        # -------------------------------------
+
         params = {
             'q': keyword,
             'token': GNEWS_API_KEY,
-            'lang': 'zh',       # 只限制繁體中文
-            # 'country': 'tw',  # 先註解掉國家限制，測試是否為範圍太窄導致
+            'lang': 'zh',
+            'country': 'tw',
             'max': limit,
-            'sortby': 'publishedAt'
+            'sortby': 'publishedAt',
+            'from': from_date_str # 強制只找這段時間內的新聞
         }
         
         response = requests.get(url, params=params)
         data = response.json()
         
-        # --- 🔍 DEBUG 區塊：把回傳結果直接印在網頁上 ---
-        st.divider()
-        st.subheader("🔍 Debug 資訊")
-        st.write(f"搜尋關鍵字: `{keyword}`")
-        st.write("API 回傳原始資料 (JSON):")
-        st.json(data) # 這裡會顯示詳細錯誤或內容
-        st.divider()
-        # -------------------------------------------
-        
+        # 除錯資訊：如果還是空的，可以在這裡看到原因
+        if 'articles' not in data or len(data['articles']) == 0:
+            # 如果還是空的，嘗試放寬條件 (移除 country 限制) 再搜一次
+            if 'country' in params:
+                del params['country']
+                response = requests.get(url, params=params)
+                data = response.json()
+
         if response.status_code != 200:
             st.error(f"API 狀態碼錯誤: {response.status_code}")
             return []
@@ -113,13 +119,13 @@ if submit_button and keyword:
     
     progress_text = st.empty()
     progress_bar = st.progress(0)
-    progress_text.text(f"🔍 正在呼叫 GNews API...")
+    progress_text.text(f"🔍 正在搜尋最近一個月的 GNews...")
     
     # 1. 呼叫 API
     articles = search_gnews(keyword, limit=5)
     
     if not articles:
-        st.warning("⚠️ 搜尋結果為空 (請查看上方 Debug JSON 資訊)。")
+        st.warning("⚠️ 搜尋結果為空。可能是該關鍵字在過去 30 天內無新聞，或剛好被 API 限制過濾。")
         progress_bar.empty()
     else:
         results_data = []
@@ -133,8 +139,10 @@ if submit_button and keyword:
             progress_text.text(f"正在處理 ({i+1}/{total}): {title[:15]}...")
             progress_bar.progress((i + 1) / total)
             
+            # 2. 爬取與摘要
             summary, real_url = extract_and_process(url)
             
+            # 如果爬蟲失敗，使用 API 自帶的描述
             if summary.startswith("⚠️") or summary.startswith("❌"):
                 summary = f"📌 (API 摘要) {api_desc}"
             
@@ -152,7 +160,7 @@ if submit_button and keyword:
         df = pd.DataFrame(results_data)
         st.dataframe(
             df, 
-            column_config={"連結": st.column_config.LinkColumn("連結")},
+            column_config={"連結": st.column_config.LinkColumn("連結", display_text="🔗 閱讀")},
             hide_index=True,
             use_container_width=True
         )

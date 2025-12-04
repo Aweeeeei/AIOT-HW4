@@ -21,12 +21,14 @@ from sumy.nlp.tokenizers import Tokenizer
 from sumy.summarizers.lsa import LsaSummarizer
 
 # --- 2. 頁面設定 ---
-st.set_page_config(page_title="GNews AI 新聞助手", page_icon="📡", layout="wide")
-st.title("📡 GNews AI 新聞摘要 (參數優化版)")
-st.markdown("來源：**GNews API** | 策略：**按時間排序 (publishedAt)** + **放寬地區**")
+st.set_page_config(page_title="Massive 金融新聞摘要", page_icon="🏦", layout="wide")
+st.title("🏦 Massive (Polygon) 金融新聞摘要")
+st.markdown("來源：**Massive (Polygon.io)** | 核心：**美股代號 (Ticker) 搜尋**")
+st.info("💡 提示：Massive 是美股資料源，請輸入 **美股代號** (例如：**TSM**, **NVDA**, **AAPL**, **AMD**)")
 
 # --- 3. API Key ---
-GNEWS_API_KEY = "b8bba61d5cec4532cc9b3630311eed30"
+# Massive (Polygon) API Key
+MASSIVE_API_KEY = "vMnBeXpL5XKK4G1nuf2jmXR9B2wXuC15"
 
 # --- 4. 核心功能函式 ---
 
@@ -61,41 +63,37 @@ def extract_and_process(url):
     except Exception as e:
         return f"❌ 抓取錯誤: {str(e)}", url
 
-def search_gnews(keyword, limit=5):
+def search_massive_news(ticker, limit=5):
     """
-    使用 GNews API 進行搜尋 (已移除國家限制，強制按時間排序)
+    使用 Massive (Polygon.io) REST API 搜尋新聞
+    Docs: https://massive.com/docs/rest/stocks/news
     """
     try:
-        url = "https://gnews.io/api/v4/search"
+        # Massive 雖然改名，但 API 網域目前仍沿用 Polygon.io
+        url = "https://api.polygon.io/v2/reference/news"
         
-        # --- 關鍵修正：計算 28 天前的時間字串 (ISO 8601 格式) ---
-        past_date = datetime.utcnow() - timedelta(days=28)
-        from_date_str = past_date.strftime('%Y-%m-%dT%H:%M:%SZ')
-
         params = {
-            'q': keyword,
-            'token': GNEWS_API_KEY,
-            'lang': 'zh',           # 只限制繁體中文
-            # 'country': 'tw',      # 移除國家限制，避免範圍過窄
-            'max': limit,
-            'sortby': 'publishedAt', # 強制按時間排序！(關鍵)
-            'from': from_date_str    # 鎖定最近一個月
+            'ticker': ticker.upper(), # 強制轉大寫 (例如 tsm -> TSM)
+            'limit': limit,
+            'apiKey': MASSIVE_API_KEY,
+            'sort': 'published_utc',  # 按時間排序
+            'order': 'desc'           # 最新的在前面
         }
         
         response = requests.get(url, params=params)
         data = response.json()
         
-        # --- DEBUG 區塊：讓使用者看到原始回傳 ---
-        with st.expander("🔍 點擊查看 API 原始回傳資料 (Debug)", expanded=True):
+        # --- DEBUG 區塊 ---
+        with st.expander("🔍 查看 Massive API 原始回傳", expanded=False):
             st.json(data)
-        # -------------------------------------
+        # -----------------
 
         if response.status_code != 200:
-            st.error(f"API 狀態碼錯誤: {response.status_code}")
+            st.error(f"API 請求失敗: {data.get('error', 'Unknown Error')}")
             return []
 
-        articles = data.get('articles', [])
-        return articles
+        # Polygon/Massive 的結果在 'results' 欄位中
+        return data.get('results', [])
 
     except Exception as e:
         st.error(f"連線錯誤: {e}")
@@ -106,21 +104,22 @@ def search_gnews(keyword, limit=5):
 with st.form(key='search_form'):
     col1, col2 = st.columns([3, 1])
     with col1:
-        keyword = st.text_input("輸入關鍵字", placeholder="例如：台積電、AI...")
+        # 預設值改為 TSM (台積電 ADR)
+        keyword = st.text_input("輸入美股代號 (Ticker)", value="TSM", placeholder="例如：TSM, NVDA, GOOGL")
     with col2:
-        submit_button = st.form_submit_button(label='🚀 搜尋')
+        submit_button = st.form_submit_button(label='🚀 搜尋 Massive')
 
 if submit_button and keyword:
     
     progress_text = st.empty()
     progress_bar = st.progress(0)
-    progress_text.text(f"🔍 正在呼叫 GNews API...")
+    progress_text.text(f"🔍 正在搜尋 Massive (Polygon) 資料庫: {keyword.upper()}...")
     
     # 1. 呼叫 API
-    articles = search_gnews(keyword, limit=5)
+    articles = search_massive_news(keyword, limit=5)
     
     if not articles:
-        st.warning("⚠️ 搜尋結果為空。請查看上方的 Debug JSON 確認原因。")
+        st.warning(f"找不到關於 {keyword.upper()} 的新聞。請確認代號是否正確 (例如台積電請用 TSM)。")
         progress_bar.empty()
     else:
         results_data = []
@@ -128,32 +127,41 @@ if submit_button and keyword:
         
         for i, item in enumerate(articles):
             title = item.get('title')
-            url = item.get('url')
+            # Massive 的新聞連結欄位通常是 'article_url'
+            url = item.get('article_url')
+            # Massive 本身有提供 description，可用作備用摘要
             api_desc = item.get('description', '')
+            publisher = item.get('publisher', {}).get('name', 'Unknown')
             
             progress_text.text(f"正在處理 ({i+1}/{total}): {title[:15]}...")
             progress_bar.progress((i + 1) / total)
             
+            # 2. 爬取與摘要
             summary, real_url = extract_and_process(url)
             
+            # 如果爬蟲失敗，使用 API 自帶的描述
             if summary.startswith("⚠️") or summary.startswith("❌"):
-                summary = f"📌 (API 摘要) {api_desc}"
+                summary = f"📌 (官方摘要) {api_desc}"
             
             results_data.append({
-                "標題": title,
-                "AI 摘要": summary,
-                "時間": item.get('publishedAt', '')[:10],
+                "新聞標題": title,
+                "媒體來源": publisher,
+                "AI 重點摘要": summary,
+                "發布時間 (UTC)": item.get('published_utc', '')[:10],
                 "連結": real_url
             })
         
         progress_bar.empty()
         progress_text.empty()
         
-        st.success(f"✅ 完成！共搜尋到 {total} 篇新聞。")
+        st.success(f"✅ 完成！找到 {total} 篇關於 {keyword.upper()} 的報導。")
         df = pd.DataFrame(results_data)
         st.dataframe(
             df, 
-            column_config={"連結": st.column_config.LinkColumn("連結", display_text="🔗 閱讀")},
+            column_config={
+                "連結": st.column_config.LinkColumn("連結", display_text="🔗 閱讀"),
+                "AI 重點摘要": st.column_config.TextColumn("AI 重點摘要", width="large")
+            },
             hide_index=True,
             use_container_width=True
         )

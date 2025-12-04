@@ -84,8 +84,8 @@ def extract_and_process(url):
         article.download()
         article.parse()
         
-        # if len(article.text) < 50:
-        #      return "文章內容太短"
+        if len(article.text) < 50:
+             return "文章內容太短"
 
         # 使用 Sumy 進行摘要 (只要 0.01秒)
         summary = sumy_summarize(article.text, sentence_count=3)

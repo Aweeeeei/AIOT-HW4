@@ -2,97 +2,107 @@ import streamlit as st
 import pandas as pd
 import requests
 import feedparser
-from newspaper import Article
+from newspaper import Article, Config
 import time
-
-# --- 引入輕量化 NLP 套件 ---
 import jieba
 from sumy.parsers.plaintext import PlaintextParser
 from sumy.nlp.tokenizers import Tokenizer
-from sumy.summarizers.lsa import LsaSummarizer # 使用 LSA 演算法
-# 也可以換成 LexRankSummarizer，效果也不錯
+from sumy.summarizers.lsa import LsaSummarizer
 
 # --- 1. 頁面設定 ---
 st.set_page_config(page_title="極速新聞摘要助手", page_icon="⚡", layout="wide")
-st.title("⚡ 極速版 Google 新聞摘要 (CPU Friendly)")
-st.markdown("使用 **LSA 演算法** 取代深度學習模型，實現 **毫秒級** 的快速摘要。")
+st.title("⚡ 極速版 Google 新聞摘要 (爬蟲強化版)")
+st.markdown("使用 **LSA 演算法** + **偽裝瀏覽器爬蟲**，解決抓取失敗問題。")
 
 # --- 2. 核心功能函式 ---
 
+def get_actual_url(google_url):
+    """
+    嘗試解析 Google News 的跳轉連結，獲取真實網址。
+    """
+    try:
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+        }
+        # 使用 requests.get 而非 head，並開啟 allow_redirects
+        # Google 有時會用 JS 跳轉，這裡嘗試獲取最終響應的 URL
+        response = requests.get(google_url, headers=headers, timeout=10, allow_redirects=True)
+        
+        # 如果網址還是 google 的，代表跳轉沒成功 (可能是 JS 轉址)，這時只能回傳原網址試試運氣
+        if "news.google.com" in response.url:
+            return google_url
+        return response.url
+    except Exception as e:
+        print(f"URL 解析錯誤: {e}")
+        return google_url # 解析失敗就回傳原網址
+
+def sumy_summarize(text, sentence_count=3):
+    """使用 Sumy + Jieba 進行中文萃取式摘要"""
+    try:
+        seg_list = jieba.cut(text)
+        text_segmented = " ".join(seg_list)
+        parser = PlaintextParser.from_string(text_segmented, Tokenizer("english")) 
+        summarizer = LsaSummarizer() 
+        summary_sentences = summarizer(parser.document, sentence_count)
+        
+        result = ""
+        for sentence in summary_sentences:
+            raw_sent = str(sentence).replace(" ", "")
+            result += raw_sent + "。"
+        return result
+    except Exception as e:
+        return f"摘要錯誤: {e}"
+
+def extract_and_process(url):
+    """
+    抓取並摘要 (加入 Config 防止被擋)
+    """
+    try:
+        # --- 關鍵修正：設定 Config 偽裝成瀏覽器 ---
+        config = Config()
+        config.browser_user_agent = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36'
+        config.request_timeout = 10  # 設定超時
+        config.fetch_images = False  # 不抓圖片，加速
+        
+        article = Article(url, config=config)
+        article.download()
+        article.parse()
+        
+        # debug 用：如果抓不到字，顯示長度
+        text_len = len(article.text)
+        
+        if text_len < 50:
+             # 嘗試另一種容錯：如果正文抓不到，試試看抓 meta description
+             if article.meta_description and len(article.meta_description) > 20:
+                 return f"(使用 Meta 描述) {article.meta_description}"
+             
+             return f"⚠️ 無法抓取內容 (長度僅 {text_len} 字) - 可能是網站阻擋或需登入"
+
+        # 使用 Sumy 進行摘要
+        summary = sumy_summarize(article.text, sentence_count=3)
+        if not summary:
+            return "摘要產生失敗 (內容可能過於破碎)"
+            
+        return summary
+        
+    except Exception as e:
+        return f"❌ 處理錯誤: {str(e)}"
+
 def search_google_news_rss(keyword, limit=5):
-    """(維持不變) 使用 Google News RSS Feed 進行搜尋"""
     encoded_keyword = requests.utils.quote(keyword)
     rss_url = f"https://news.google.com/rss/search?q={encoded_keyword}&hl=zh-TW&gl=TW&ceid=TW:zh-Hant"
     feed = feedparser.parse(rss_url)
     
     news_list = []
     for entry in feed.entries[:limit]:
-        real_url = get_actual_url(entry.link)
-        if real_url:
-            news_list.append({
-                "title": entry.title,
-                "link": real_url,
-                "published": entry.published
-            })
+        # 先給 Google 連結，後續處理時再解析
+        news_list.append({
+            "title": entry.title,
+            "link": entry.link, 
+            "published": entry.published
+        })
     return news_list
-
-def get_actual_url(google_url):
-    """(維持不變) 解析真實 URL"""
-    try:
-        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'}
-        response = requests.head(google_url, allow_redirects=True, headers=headers, timeout=5)
-        return response.url
-    except:
-        return None
-
-def sumy_summarize(text, sentence_count=3):
-    """
-    使用 Sumy + Jieba 進行中文萃取式摘要
-    """
-    try:
-        # 1. 中文前處理：因為 sumy 預設是以空白分詞，中文需要先用 jieba 切開
-        # 例如："今天天氣很好" -> "今天 天氣 很好"
-        seg_list = jieba.cut(text)
-        text_segmented = " ".join(seg_list)
-        
-        # 2. 建立 Parser
-        parser = PlaintextParser.from_string(text_segmented, Tokenizer("english")) 
-        # 這裡借用 english tokenizer，因為我們已經手動用空白切開中文詞彙了
-        
-        # 3. 初始化摘要器 (LSA)
-        summarizer = LsaSummarizer() 
-        
-        # 4. 執行摘要，取出最重要的 N 個句子
-        summary_sentences = summarizer(parser.document, sentence_count)
-        
-        # 5. 組合結果 (還原成不帶空白的中文)
-        result = ""
-        for sentence in summary_sentences:
-            # sumy 的 sentence 物件轉字串後會有空白，我們把它去掉 (簡單處理)
-            raw_sent = str(sentence).replace(" ", "")
-            result += raw_sent + "。"
-            
-        return result
-        
-    except Exception as e:
-        return f"摘要錯誤: {e}"
-
-def extract_and_process(url):
-    """抓取並摘要"""
-    try:
-        article = Article(url)
-        article.download()
-        article.parse()
-        
-        if len(article.text) < 50:
-             return "文章內容太短"
-
-        # 使用 Sumy 進行摘要 (只要 0.01秒)
-        summary = sumy_summarize(article.text, sentence_count=3)
-        return summary
-        
-    except Exception as e:
-        return f"無法讀取: {str(e)}"
 
 # --- 3. 主程式邏輯 ---
 
@@ -101,35 +111,47 @@ with st.form(key='search_form'):
     with col1:
         keyword = st.text_input("輸入關鍵字", placeholder="例如：台積電、輝達...")
     with col2:
-        submit_button = st.form_submit_button(label='🚀 極速搜尋')
+        submit_button = st.form_submit_button(label='🚀 搜尋並摘要')
 
 if submit_button and keyword:
     st.divider()
     
-    # 這裡不需要進度條了，因為速度會非常快
-    with st.spinner('正在光速搜尋與摘要中...'):
-        news_items = search_google_news_rss(keyword)
+    progress_text = st.empty()
+    progress_bar = st.progress(0)
+    
+    progress_text.text("正在搜尋新聞來源...")
+    news_items = search_google_news_rss(keyword)
+    
+    results_data = []
+    total = len(news_items)
+    
+    for i, item in enumerate(news_items):
+        progress_text.text(f"正在處理 ({i+1}/{total}): {item['title']} ...")
+        progress_bar.progress((i + 1) / total)
         
-        results_data = []
-        for item in news_items:
-            # 抓取 + 摘要
-            summary = extract_and_process(item['link'])
+        # 1. 嘗試解析真實 URL
+        real_url = get_actual_url(item['link'])
+        
+        # 2. 抓取與摘要
+        summary = extract_and_process(real_url)
+        
+        results_data.append({
+            "新聞標題": item['title'],
+            "重點摘要": summary,
+            "原始連結": real_url
+        })
+    
+    progress_bar.empty()
+    progress_text.empty()
             
-            results_data.append({
-                "新聞標題": item['title'],
-                "重點摘要 (LSA萃取)": summary,
-                "原始連結": item['link']
-            })
-            
-    # 直接顯示結果
     if results_data:
-        st.success(f"已完成！共找到 {len(results_data)} 篇新聞。")
+        st.success(f"已完成！")
         df = pd.DataFrame(results_data)
         st.dataframe(
             df,
             column_config={
-                "原始連結": st.column_config.LinkColumn("原始連結", display_text="🔗 閱讀原文"),
-                "重點摘要 (LSA萃取)": st.column_config.TextColumn("重點摘要", width="large")
+                "原始連結": st.column_config.LinkColumn("連結", display_text="🔗"),
+                "重點摘要": st.column_config.TextColumn("重點摘要", width="large")
             },
             hide_index=True,
             use_container_width=True

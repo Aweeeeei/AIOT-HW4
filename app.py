@@ -1,43 +1,32 @@
 import streamlit as st
 import pandas as pd
 import requests
-from bs4 import BeautifulSoup
 import feedparser
 from newspaper import Article
-from transformers import pipeline
 import time
 
+# --- 引入輕量化 NLP 套件 ---
+import jieba
+from sumy.parsers.plaintext import PlaintextParser
+from sumy.nlp.tokenizers import Tokenizer
+from sumy.summarizers.lsa import LsaSummarizer # 使用 LSA 演算法
+# 也可以換成 LexRankSummarizer，效果也不錯
+
 # --- 1. 頁面設定 ---
-st.set_page_config(page_title="AI 新聞摘要小幫手", page_icon="📰", layout="wide")
-st.title("📰 AI Google 新聞搜尋與摘要")
-st.markdown("輸入關鍵字，AI 將為您搜尋前 5 篇新聞並進行重點摘要。")
-st.markdown("*(注意：由於在 CPU 環境運行深度學習模型，每篇文章摘要約需 10-30 秒，請耐心等待)*")
+st.set_page_config(page_title="極速新聞摘要助手", page_icon="⚡", layout="wide")
+st.title("⚡ 極速版 Google 新聞摘要 (CPU Friendly)")
+st.markdown("使用 **LSA 演算法** 取代深度學習模型，實現 **毫秒級** 的快速摘要。")
 
-# --- 2. 核心功能函式定義 ---
-
-@st.cache_resource
-def load_summarizer_model():
-    """
-    載入摘要模型。使用 cache_resource 避免每次重新載入。
-    選擇 'sshleifer/distilbart-cnn-12-6' 是因為它比標準 BART 模型更輕量，適合 CPU。
-    """
-    with st.spinner('正在初始化 AI 摘要模型 (首次執行需下載模型，約 300MB)...'):
-        # 定義摘要 pipeline
-        summarizer = pipeline("summarization", model="sshleifer/distilbart-cnn-12-6")
-    return summarizer
+# --- 2. 核心功能函式 ---
 
 def search_google_news_rss(keyword, limit=5):
-    """
-    使用 Google News RSS Feed 進行搜尋 (比直接爬 HTML 更穩定)
-    """
+    """(維持不變) 使用 Google News RSS Feed 進行搜尋"""
     encoded_keyword = requests.utils.quote(keyword)
     rss_url = f"https://news.google.com/rss/search?q={encoded_keyword}&hl=zh-TW&gl=TW&ceid=TW:zh-Hant"
-    
     feed = feedparser.parse(rss_url)
     
     news_list = []
     for entry in feed.entries[:limit]:
-        # Google RSS 提供的連結是跳轉連結，需要解析出真實 URL
         real_url = get_actual_url(entry.link)
         if real_url:
             news_list.append({
@@ -48,113 +37,102 @@ def search_google_news_rss(keyword, limit=5):
     return news_list
 
 def get_actual_url(google_url):
-    """
-    從 Google News 的跳轉連結中獲取真實的網站連結。
-    """
+    """(維持不變) 解析真實 URL"""
     try:
-        # 設定 User-Agent 模擬瀏覽器行為，避免被擋
-        headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
-        }
-        # 發送請求並獲取最終跳轉後的 URL
+        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'}
         response = requests.head(google_url, allow_redirects=True, headers=headers, timeout=5)
         return response.url
-    except Exception as e:
-        # print(f"解析 URL 失敗: {e}")
+    except:
         return None
 
-def extract_and_summarize(url, summarizer_pipeline):
+def sumy_summarize(text, sentence_count=3):
     """
-    抓取新聞內文並呼叫 AI 模型進行摘要
+    使用 Sumy + Jieba 進行中文萃取式摘要
     """
     try:
-        # 1. 使用 newspaper3k 抓取文章內容
+        # 1. 中文前處理：因為 sumy 預設是以空白分詞，中文需要先用 jieba 切開
+        # 例如："今天天氣很好" -> "今天 天氣 很好"
+        seg_list = jieba.cut(text)
+        text_segmented = " ".join(seg_list)
+        
+        # 2. 建立 Parser
+        parser = PlaintextParser.from_string(text_segmented, Tokenizer("english")) 
+        # 這裡借用 english tokenizer，因為我們已經手動用空白切開中文詞彙了
+        
+        # 3. 初始化摘要器 (LSA)
+        summarizer = LsaSummarizer() 
+        
+        # 4. 執行摘要，取出最重要的 N 個句子
+        summary_sentences = summarizer(parser.document, sentence_count)
+        
+        # 5. 組合結果 (還原成不帶空白的中文)
+        result = ""
+        for sentence in summary_sentences:
+            # sumy 的 sentence 物件轉字串後會有空白，我們把它去掉 (簡單處理)
+            raw_sent = str(sentence).replace(" ", "")
+            result += raw_sent + "。"
+            
+        return result
+        
+    except Exception as e:
+        return f"摘要錯誤: {e}"
+
+def extract_and_process(url):
+    """抓取並摘要"""
+    try:
         article = Article(url)
         article.download()
         article.parse()
         
-        text_content = article.text
-        
-        if len(text_content) < 200:
-             return "文章內容太短，無法進行有效摘要。"
+        if len(article.text) < 50:
+             return "文章內容太短"
 
-        # 2. 使用 Transformers 進行摘要
-        # max_length: 摘要最大長度, min_length: 摘要最小長度
-        # 為了速度，我們限制輸入文本的長度 (truncation=True)
-        summary_result = summarizer_pipeline(text_content, max_length=130, min_length=50, do_sample=False, truncation=True)
-        
-        return summary_result[0]['summary_text']
+        # 使用 Sumy 進行摘要 (只要 0.01秒)
+        summary = sumy_summarize(article.text, sentence_count=3)
+        return summary
         
     except Exception as e:
-        return f"抓取或摘要失敗: {str(e)}"
+        return f"無法讀取: {str(e)}"
 
 # --- 3. 主程式邏輯 ---
 
-# 預先載入模型
-try:
-    summarizer = load_summarizer_model()
-    st.success("AI 模型準備就緒！")
-except Exception as e:
-    st.error(f"模型載入失敗，請檢查記憶體或網路狀態: {e}")
-    st.stop()
-
-
-# 使用者輸入介面
 with st.form(key='search_form'):
     col1, col2 = st.columns([3, 1])
     with col1:
-        keyword = st.text_input("請輸入新聞關鍵字", placeholder="例如：台積電、人工智慧...")
+        keyword = st.text_input("輸入關鍵字", placeholder="例如：台積電、輝達...")
     with col2:
-        submit_button = st.form_submit_button(label='🔍 開始搜尋與摘要')
+        submit_button = st.form_submit_button(label='🚀 極速搜尋')
 
 if submit_button and keyword:
     st.divider()
-    progress_bar = st.progress(0)
-    status_text = st.empty()
     
-    results_data = []
-
-    # 步驟 1: 搜尋新聞
-    status_text.info(f"正在搜尋「{keyword}」的相關新聞...")
-    news_items = search_google_news_rss(keyword)
-    
-    if not news_items:
-        st.warning("找不到相關新聞，請嘗試其他關鍵字。")
-    else:
-        total_items = len(news_items)
+    # 這裡不需要進度條了，因為速度會非常快
+    with st.spinner('正在光速搜尋與摘要中...'):
+        news_items = search_google_news_rss(keyword)
         
-        # 步驟 2 & 3: 逐一抓取內容並摘要
-        for i, item in enumerate(news_items):
-            status_text.info(f"正在處理第 {i+1}/{total_items} 篇新聞：{item['title']}...")
-            progress_bar.progress((i) / total_items)
-            
-            # 執行摘要 (這一步最花時間)
-            summary = extract_and_summarize(item['link'], summarizer)
+        results_data = []
+        for item in news_items:
+            # 抓取 + 摘要
+            summary = extract_and_process(item['link'])
             
             results_data.append({
                 "新聞標題": item['title'],
-                "AI 摘要": summary,
+                "重點摘要 (LSA萃取)": summary,
                 "原始連結": item['link']
             })
-        
-        progress_bar.progress(100)
-        status_text.success("✅ 所有新聞處理完成！")
-        time.sleep(1)
-        status_text.empty()
-        progress_bar.empty()
-
-        # 步驟 4: 以表格呈現結果
-        st.subheader(f"📊 「{keyword}」的新聞摘要結果")
-        
-        # 將資料轉換為 Pandas DataFrame
+            
+    # 直接顯示結果
+    if results_data:
+        st.success(f"已完成！共找到 {len(results_data)} 篇新聞。")
         df = pd.DataFrame(results_data)
-        
-        # 使用 Streamlit 的 dataframe 展示，並設定連結欄位顯示為可點擊的 URL
         st.dataframe(
             df,
             column_config={
-                "原始連結": st.column_config.LinkColumn("原始連結", display_text="點擊閱讀原文")
+                "原始連結": st.column_config.LinkColumn("原始連結", display_text="🔗 閱讀原文"),
+                "重點摘要 (LSA萃取)": st.column_config.TextColumn("重點摘要", width="large")
             },
             hide_index=True,
             use_container_width=True
         )
+    else:
+        st.warning("找不到相關新聞。")

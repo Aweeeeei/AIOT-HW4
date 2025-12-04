@@ -1,14 +1,12 @@
 import streamlit as st
 import pandas as pd
 import requests
-import feedparser
+from bs4 import BeautifulSoup
 from newspaper import Article, Config
 import jieba
 import nltk
-from bs4 import BeautifulSoup
-import re
 
-# --- 1. NLTK 強制修復 ---
+# --- 1. NLTK 自動修復 (雲端環境必備) ---
 try:
     nltk.data.find('tokenizers/punkt_tab')
 except LookupError:
@@ -23,64 +21,14 @@ from sumy.nlp.tokenizers import Tokenizer
 from sumy.summarizers.lsa import LsaSummarizer
 
 # --- 2. 頁面設定 ---
-st.set_page_config(page_title="Google News 摘要 (雲端修正版)", page_icon="🛡️", layout="wide")
-st.title("🛡️ Google News AI 摘要 (雲端阻擋突破版)")
-st.markdown("針對 **Streamlit Cloud IP** 被 Google 識別為機器人的問題進行修復。")
+st.set_page_config(page_title="Yahoo 財經新聞摘要", page_icon="📈", layout="wide")
+st.title("📈 Yahoo 財經新聞 AI 摘要")
+st.markdown("來源：**Yahoo 股市** | 技術：**LSA 演算法** + **Python 爬蟲**")
 
-# --- 3. 核心功能：強力連結解析 ---
-
-def get_real_url(google_url):
-    """
-    針對 Streamlit Cloud 環境的強力解碼。
-    當 requests 拿到 Google 的中轉頁面 (Consent Page) 時，
-    直接用 BeautifulSoup 暴力挖出裡面的目標連結。
-    """
-    try:
-        headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
-            'Accept-Language': 'zh-TW,zh;q=0.9,en-US;q=0.8,en;q=0.7',
-            'Referer': 'https://news.google.com/'
-        }
-        
-        # 1. 發送請求
-        response = requests.get(google_url, headers=headers, timeout=15)
-        
-        # 2. 如果網址已經跳轉出 google，直接回傳
-        if 'news.google.com' not in response.url and 'google.com' not in response.url:
-            return response.url
-
-        # 3. 如果還在 Google，代表被擋住了。解析 HTML
-        soup = BeautifulSoup(response.text, 'html.parser')
-        
-        # Google 中轉頁通常有一個主要的連結寫著 "Opening..." 或隱藏在 JS 中
-        # 方法 A: 找尋頁面中主要的 <a> 標籤 (通常是第一個非 Google 的連結)
-        links = soup.find_all('a')
-        for link in links:
-            href = link.get('href')
-            if href and href.startswith('http') and 'google.com' not in href:
-                return href
-
-        # 方法 B: 搜尋 JavaScript 中的跳轉連結
-        # 類似 window.location.replace("https://...")
-        match = re.search(r'window\.location\.replace\("(.*?)"\)', response.text)
-        if match:
-            return match.group(1)
-            
-        # 方法 C: 搜尋 <noscript> 區塊中的連結
-        noscript = soup.find('noscript')
-        if noscript:
-            link = noscript.find('a')
-            if link and link.get('href'):
-                return link.get('href')
-
-        # 如果都失敗，回傳原始連結 (雖然可能會摘要失敗，但沒辦法了)
-        return google_url
-        
-    except Exception as e:
-        return google_url
+# --- 3. 核心功能函式 ---
 
 def sumy_summarize(text, sentence_count=3):
+    """使用 Sumy + Jieba 進行中文萃取式摘要"""
     try:
         if not text: return "無內容"
         seg_list = jieba.cut(text)
@@ -95,50 +43,88 @@ def sumy_summarize(text, sentence_count=3):
             result += raw_sent + "。"
         return result
     except Exception as e:
-        return f"摘要運算錯誤: {e}"
+        return f"摘要錯誤: {e}"
 
-def extract_and_process(google_url):
+def extract_and_process(url):
+    """
+    抓取並摘要 Yahoo 新聞
+    Yahoo 的連結通常很乾淨，直接爬取即可。
+    """
     try:
-        # 步驟 1: 獲取真實網址 (關鍵步驟)
-        real_url = get_real_url(google_url)
-        
-        # 如果解碼後還是 google 網址，顯示警告
-        if "google.com" in real_url:
-            return "⚠️ 無法穿透 Google 轉址頁 (IP 被阻擋)", real_url
-
-        # 步驟 2: 爬取內容
+        # 設定偽裝瀏覽器
         config = Config()
         config.browser_user_agent = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
         config.request_timeout = 10
         
-        article = Article(real_url, config=config)
+        article = Article(url, config=config)
         article.download()
         article.parse()
         
-        # 步驟 3: 檢查長度
+        # 檢查內容長度
         if len(article.text) < 50:
-             if article.meta_description and len(article.meta_description) > 10:
-                 return f"📌 (來源簡介) {article.meta_description}", real_url
-             return "⚠️ 網站阻擋爬蟲 (無內容)", real_url
+             return "⚠️ 內容過短或非新聞格式 (可能是影片或圖表)", url
 
+        # 執行摘要
         summary = sumy_summarize(article.text, sentence_count=3)
-        return summary, real_url
+        return summary, url
         
     except Exception as e:
-        return f"❌ 處理錯誤: {str(e)}", google_url
+        return f"❌ 處理錯誤: {str(e)}", url
 
-def search_google_news_rss(keyword, limit=5):
-    encoded_keyword = requests.utils.quote(keyword)
-    rss_url = f"https://news.google.com/rss/search?q={encoded_keyword}&hl=zh-TW&gl=TW&ceid=TW:zh-Hant"
-    feed = feedparser.parse(rss_url)
-    
+def scrape_yahoo_finance(keyword, limit=5):
+    """
+    爬取 Yahoo 股市搜尋結果
+    參考自: LearnCodeWithMike (針對搜尋頁面改寫)
+    """
     results = []
-    for entry in feed.entries[:limit]:
-        results.append({
-            "title": entry.title,
-            "link": entry.link,
-            "published": entry.published
-        })
+    try:
+        # Yahoo 股市搜尋 URL
+        url = f"https://tw.stock.yahoo.com/search?p={keyword}"
+        
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+        }
+        
+        response = requests.get(url, headers=headers, timeout=10)
+        soup = BeautifulSoup(response.text, "html.parser")
+        
+        # 策略：抓取頁面中所有看起來像新聞的連結
+        # Yahoo 搜尋頁面結構比較雜，我們找 href 包含 "/news/" 的連結
+        # 並且排除重複的
+        
+        seen_links = set()
+        count = 0
+        
+        # 抓取所有連結
+        links = soup.find_all('a', href=True)
+        
+        for link in links:
+            href = link['href']
+            title = link.get_text().strip()
+            
+            # 篩選條件：
+            # 1. 連結包含 '/news/' (代表是新聞)
+            # 2. 標題長度大於 10 (過濾掉無意義的按鈕)
+            # 3. 不在已抓取清單中
+            if '/news/' in href and len(title) > 10 and href not in seen_links:
+                
+                # 處理相對路徑 (雖然 Yahoo 通常給絕對路徑，保險起見)
+                if not href.startswith('http'):
+                    href = 'https://tw.stock.yahoo.com' + href
+                
+                results.append({
+                    "title": title,
+                    "link": href
+                })
+                seen_links.add(href)
+                count += 1
+                
+                if count >= limit:
+                    break
+                    
+    except Exception as e:
+        st.error(f"Yahoo 爬蟲發生錯誤: {e}")
+        
     return results
 
 # --- 4. 主程式介面 ---
@@ -146,9 +132,9 @@ def search_google_news_rss(keyword, limit=5):
 with st.form(key='search_form'):
     col1, col2 = st.columns([3, 1])
     with col1:
-        keyword = st.text_input("輸入關鍵字", placeholder="例如：台積電...")
+        keyword = st.text_input("輸入金融關鍵字", placeholder="例如：台積電、ETF、高股息...")
     with col2:
-        submit_button = st.form_submit_button(label='🚀 搜尋')
+        submit_button = st.form_submit_button(label='🚀 搜尋 Yahoo')
 
 if submit_button and keyword:
     st.divider()
@@ -156,39 +142,41 @@ if submit_button and keyword:
     progress_text = st.empty()
     progress_bar = st.progress(0)
     
-    progress_text.text(f"🔍 正在 Google News 搜尋「{keyword}」...")
-    news_items = search_google_news_rss(keyword, limit=5)
+    progress_text.text(f"🔍 正在爬取 Yahoo 股市：「{keyword}」...")
+    
+    # 1. 爬取
+    news_items = scrape_yahoo_finance(keyword, limit=5)
     
     if not news_items:
-        st.warning("找不到相關新聞。")
+        st.warning("找不到相關新聞，Yahoo 搜尋頁面結構可能已更新，或無相關資料。")
         progress_bar.empty()
     else:
         results_data = []
         total = len(news_items)
         
         for i, item in enumerate(news_items):
-            progress_text.text(f"正在處理 ({i+1}/{total}): 嘗試破解轉址... {item['title'][:10]}")
+            progress_text.text(f"正在處理 ({i+1}/{total}): {item['title'][:15]}...")
             progress_bar.progress((i + 1) / total)
             
-            # 呼叫處理函式
+            # 2. 摘要
             summary, real_url = extract_and_process(item['link'])
             
             results_data.append({
                 "新聞標題": item['title'],
                 "AI 重點摘要": summary,
-                "真實連結": real_url
+                "連結": real_url
             })
         
         progress_bar.empty()
         progress_text.empty()
         
-        st.success("✅ 完成！如果摘要顯示 IP 阻擋，建議重新整理或稍後再試。")
+        st.success(f"✅ 完成！共找到 {total} 篇相關報導。")
         
         df = pd.DataFrame(results_data)
         st.dataframe(
             df,
             column_config={
-                "真實連結": st.column_config.LinkColumn("連結", display_text="🔗 前往閱讀"),
+                "連結": st.column_config.LinkColumn("連結", display_text="🔗 前往 Yahoo"),
                 "AI 重點摘要": st.column_config.TextColumn("AI 重點摘要", width="large"),
             },
             hide_index=True,

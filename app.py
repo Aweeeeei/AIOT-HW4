@@ -66,18 +66,18 @@ def extract_and_process(url):
 
 def search_news_ddg(keyword, limit=5):
     """
-    使用 DuckDuckGo 搜尋新聞 (直接提供真實連結，無需解碼)
+    使用 DuckDuckGo 搜尋新聞
     """
     results = []
     try:
         with DDGS() as ddgs:
-            # region='wt-wt' 表示全球，也可以設 'tw-zh' 針對台灣
-            ddgs_news = ddgs.news(keywords=keyword, region='wt-wt', safebesearch='off', max_results=limit)
+            # 修正處：將 safebesearch 改為 safesearch
+            ddgs_news = ddgs.news(keywords=keyword, region='wt-wt', safesearch='off', max_results=limit)
             
             for r in ddgs_news:
                 results.append({
                     "title": r['title'],
-                    "link": r['url'], # DuckDuckGo 直接給出真實連結
+                    "link": r['url'], 
                     "source": r['source'],
                     "date": r['date']
                 })
@@ -114,7 +114,7 @@ if submit_button and keyword:
             progress_text.text(f"正在處理 ({i+1}/{total}): {item['title']} ...")
             progress_bar.progress((i + 1) / total)
             
-            # 直接使用 link，因為這是真實網址
+            # 直接使用 link
             summary = extract_and_process(item['link'])
             
             results_data.append({

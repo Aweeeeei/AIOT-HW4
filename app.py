@@ -22,7 +22,7 @@ from sumy.summarizers.lsa import LsaSummarizer
 
 # --- 2. 頁面設定 ---
 st.set_page_config(page_title="Massive 金融新聞 (中譯版)", page_icon="🏦", layout="wide")
-st.title("🏦 Massive 美股新聞摘要 (自動中譯 + 極速版)")
+st.title("🏦 Massive 美股新聞摘要")
 st.markdown("來源：**Massive (Polygon)** | 核心：**LSA 摘要** + **自動翻譯** + **多執行緒加速**")
 st.info("💡 提示：輸入美股代號 (例如 **TSM**, **NVDA**, **AAPL**)")
 

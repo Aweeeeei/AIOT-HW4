@@ -1,0 +1,10 @@
+streamlit
+pandas
+requests
+beautifulsoup4
+feedparser
+newspaper3k
+lxml_html_clean
+torch --index-url https://download.pytorch.org/whl/cpu
+transformers
+sentencepiece

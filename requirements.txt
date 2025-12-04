@@ -2,7 +2,7 @@ streamlit
 pandas
 requests
 beautifulsoup4
-feedparser
+duckduckgo-search
 newspaper3k
 lxml_html_clean
 sumy
